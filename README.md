@@ -270,19 +270,7 @@ The preselected-tree comparison implements PEARL's pruning rule on a supplied ca
 
 ## Citation
 
-If you use this code, please cite the paper.
-
-```bibtex
-@misc{lee2026targetrows,
-  title  = {Understanding Target Probability Reuse in Speculative Decoding},
-  author = {Lee, Jungseob and Jang, Giyoon and Nam, Chailin and Kum, Jiwoo and Lee, Sihyeon and
-            Choo, Kyojun and Song, Jihun and Song, Eunseo and Park, Chanjun},
-  year   = {2026},
-  url    = {https://github.com/js-lee-AI/TargetRows}
-}
-```
-
-The Cite this repository button in the GitHub sidebar gives the same entry from [`CITATION.cff`](CITATION.cff).
+Citation details and BibTeX will be added when the paper's preprint is publicly available.
 
 ## License
 
