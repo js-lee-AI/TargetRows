@@ -1,38 +1,71 @@
-# TargetRows
+<p align="center">
+  <img src="assets/banner.png" width="100%" alt="TargetRows — target-aware tree selection and exact-context probability reuse" />
+</p>
 
-Core reference implementation for **Understanding Target Probability Reuse in Speculative Decoding**.
+<h3 align="center">Understanding Target Probability Reuse<br>in Speculative Decoding</h3>
 
-Jungseob Lee, Giyoon Jang, Chailin Nam, Jiwoo Kum, Sihyeon Lee, Kyojun Choo, Jihun Song, Eunseo Song, and Chanjun Park.
+<div align="center">
 
-TargetRows implements tree selection using a target model's next-token distribution and illustrates when a previously computed distribution can be reused exactly. It contains a small NumPy library, a CPU example, and tests of the selection and verification identities. Model weights, datasets, generated text, benchmark execution scripts, and GPU serving integrations are outside this release.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![NumPy](https://img.shields.io/badge/NumPy-CPU-4D77CF?logo=numpy&logoColor=white)](https://numpy.org/) [![CI](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml/badge.svg)](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml)
+
+<b><a href="#overview">Overview</a> · <a href="#quick-start">Quick start</a> · <a href="#usage">Usage</a> · <a href="#api">API</a> · <a href="docs/algorithms.md">Method details</a> · <a href="#faq">FAQ</a> · <a href="#citation">Citation</a></b>
+
+</div>
+
+<p align="center">
+  Jungseob Lee · Giyoon Jang · Chailin Nam · Jiwoo Kum · Sihyeon Lee<br>
+  Kyojun Choo · Jihun Song · Eunseo Song · Chanjun Park
+</p>
+
+---
+
+## Overview
+
+Speculative decoding verifies a tree of draft tokens with a target model. The same pass also computes next-token probability distributions at the scored prefixes. **When can those distributions be reused, and how can a target distribution improve the next tree's allocation?**
+
+TargetRows provides the core algorithms for studying both questions:
+
+| Component | What it does |
+| --- | --- |
+| **Root selection** | Reranks a candidate pool by replacing the first draft factor with the exact target probability. |
+| **Root-draw selection** | Draws the first token from the target before allocating the tree beneath it. |
+| **Exact-context reuse** | Looks up a retained probability row using the full committed token context. |
+| **Verification and acceptance** | Follows target draws through a tree and computes expected accepted-token counts. |
+
+The library runs on a CPU with NumPy. This release contains the core implementation, a synthetic example, and tests; model execution and KV-cache management belong to the caller.
 
 ## Quick start
-
-Python 3.10 or newer is required. The example needs no GPU, model download, or dataset.
 
 ```bash
 git clone https://github.com/js-lee-AI/TargetRows.git
 cd TargetRows
 python -m pip install .
 python examples/quickstart.py
-python -m unittest discover -s tests -v
 ```
 
-The example uses a synthetic three-token vocabulary. Its expected acceptance values are:
+Python 3.10 or newer is required. The example needs no GPU, checkpoint, or dataset. CI runs the example and the tests on Python 3.10 and 3.12.
 
-| Selection rule | Expected accepted tokens |
-| --- | ---: |
-| Draft ranking | 0.428 |
-| Root selection | 1.824 |
-| Oracle selection | 1.824 |
-| Root-draw selection | 2.257 |
-| Pruning a preselected tree | 1.228 |
+<details>
+<summary>Example output — synthetic three-token vocabulary</summary>
 
-These numbers explain the algorithms; they are not the paper's experimental results. All rules use a budget of four non-root nodes. Root-draw selection and pruning count the first target draw as an accepted token and average over that draw. The additional continuation token is excluded throughout.
+```text
+Synthetic example: expected accepted tokens (continuation excluded)
+Draft        0.428  ((0,), (0, 0), (0, 1), (0, 0, 0))
+Root         1.824  ((1,), (1, 0), (1, 0, 0), (0,))
+Oracle       1.824  ((1,), (1, 0), (1, 0, 0), (0,))
+Root-draw    2.257
+Preselected  1.228
+```
 
-## Selecting a tree
+These are illustrative values from the example, not the paper's benchmark results. The budget is four non-root nodes. Root-draw and preselected-tree pruning average over the target first draw and count it as accepted; all counts exclude the additional continuation token.
 
-A candidate path is a tuple of token IDs relative to the current context. The empty path is the implicit root. A pool must contain all non-root ancestors of every candidate; parents precede children. Supply cumulative draft log probabilities, rather than individual edge log probabilities.
+</details>
+
+## Usage
+
+### Select a tree with the target root row
+
+Represent each candidate as a tuple of token IDs relative to the current context. The pool contains every candidate's ancestors, with parents listed before children. Supply cumulative draft log probabilities, rather than individual edge scores.
 
 ```python
 import numpy as np
@@ -43,61 +76,84 @@ pool = CandidatePool(
     draft_log_scores=tuple(np.log([0.7, 0.3, 0.42, 0.24])),
 )
 root_row = np.array([0.2, 0.8])
-tree = select_root(pool, root_row, budget=3)
 
+# Replace the first draft factor with the target probability.
+tree = select_root(pool, root_row, budget=3)
+print(tree)  # ((1,), (1, 0), (0,))
+
+# Or sample first, then allocate the tree beneath the sampled token.
 rng = np.random.default_rng(7)
-first_token = int(rng.choice(len(root_row), p=root_row))
-adaptive_tree = select_root_draw(pool, first_token, budget=3)
+first = int(rng.choice(len(root_row), p=root_row))
+adaptive_tree = select_root_draw(pool, first, budget=3)
 ```
 
-For a path $u=(x_1,\ldots,x_d)$, root selection replaces only the first draft factor:
+For root-draw selection, pass the same `first` token to `verify_tree(..., first_token=first)` after obtaining the target rows for the selected tree. This consumes the draw once. The complete selection-and-verification example is in [`examples/quickstart.py`](examples/quickstart.py).
 
-$$w_{\mathrm{root}}(u)=p(x_1\mid c)\prod_{i=2}^{d}q(x_i\mid c,x_{<i}).$$
-
-`select_root` ranks candidates by this weight, with ties resolved by depth and then draft rank. `CandidatePool` accepts an optional `draft_rank` permutation to preserve an existing drafter's ordering. Scores must be finite cumulative log probabilities and must not increase along a path.
-
-`select_root_draw` receives the first token **already sampled from the target root row**, retains that token, and fills the remaining budget with descendants in draft order. If the first token is absent from the pool, it returns that token alone. The verification pass must still evaluate the target at that token's prefix.
-
-| Function | Purpose |
-| --- | --- |
-| `select_draft` | Keep the top candidates in draft order. |
-| `select_root` | Replace the first path factor with the exact target probability. |
-| `select_root_draw` | Allocate the tree after drawing the first target token. |
-| `select_preselected` | Prune a preselected draft tree beneath that same draw, as in the PEARL-style comparison. |
-| `select_oracle` | Rank by target path probabilities when rows throughout the pool are available. |
-
-The oracle is a reference for analysis; obtaining all of its rows has a cost. Root selection changes the allocation but does not guarantee an improvement for every pool and target distribution.
-
-## Verification and exact reuse
-
-`verify_tree` follows target draws through a selected tree, accepts the in-tree path, and emits one continuation token. Its input `rows` maps each scored relative prefix to a complete target next-token probability vector, including the root at `()`. Supply rows at all selected nodes. Additional scored prefixes can be included when examining address coverage.
-
-For root-draw selection, pass `first_token` to verification so the draw is consumed exactly once. For ordinary fixed-tree verification, omit it. `distribution(logits, temperature=0)` produces the argmax point mass used for greedy decoding; a positive temperature produces a softmax distribution. The rows must match the actual target decoding distribution, including any probability transformations used by the caller.
-
-Under exhaustive traversal, the emitted continuation exits the candidate tree. If only that tree was scored, the new context has no reusable row. Setting `stop_at_leaf=True` instead emits a leaf draw as the continuation: it preserves that leaf's row at the cost of one accepted token on a covered round. Both policies return a `VerificationResult` with `accepted`, `continuation`, `emitted`, and `covered`.
-
-`ExactRowCache` uses the **entire token context** as its key. Equal final tokens do not imply equal conditional distributions:
+### Reuse a row at its exact context
 
 ```python
 from target_rows import ExactRowCache
 
 cache = ExactRowCache()
 cache.put((10, 20, 30), [0.2, 0.8])
-assert cache.get((10, 20, 30)) is not None
-assert cache.get((11, 20, 30)) is None
+
+assert cache.get((10, 20, 30)) is not None  # Same full context.
+assert cache.get((11, 20, 30)) is None      # Same last token, different context.
 ```
 
-Each cache belongs to one fixed target computation. Clear it, or use a new instance, when model weights, tokenizer, attention or position semantics, numerical execution semantics, temperature, or other probability transformations change. The cache checks the address; the model integration is responsible for the computation being unchanged.
+Each cache belongs to one fixed target computation. Clear it when model weights, tokenizer, attention or position semantics, numerical execution semantics, temperature, or probability transformations change. The caller is responsible for preserving those conditions.
 
-## Measuring acceptance
+## API
 
-For a fixed prefix-closed tree $S$, exhaustive verification has expected accepted draft-token count
+| Function | Purpose |
+| --- | --- |
+| `select_draft` | Keep candidates in the original draft order. |
+| `select_root` | Replace the first path factor with the target probability. |
+| `select_root_draw` | Allocate descendants after the first target draw. |
+| `select_preselected` | Prune a preselected draft tree beneath that same draw. |
+| `select_oracle` | Rank by target path probabilities when rows throughout the pool are available. |
+| `verify_tree` | Accept a target path, emit one continuation, and report address coverage. |
+| `expected_acceptance` | Evaluate expected accepted draft tokens for a fixed tree. |
+| `expected_root_draw_acceptance` | Average acceptance over the target first draw. |
+| `distribution` | Convert logits to a softmax distribution, or an argmax point mass at temperature zero. |
+| `ExactRowCache` | Store and retrieve rows by the full token context. |
 
-$$V(S)=\sum_{u\in S}p(u\mid c).$$
+[Method details](docs/algorithms.md) cover the equations, tie handling, verification inputs, stopping policies, and acceptance conventions.
 
-`expected_acceptance(tree, rows)` evaluates this identity. `expected_root_draw_acceptance(pool, rows, budget)` averages over the first target draw, including draws outside the candidate pool. Its leading one counts that accepted first token. Neither quantity includes the continuation token or estimates wall-clock speed.
+## Checks
 
-The tests enumerate small trees and target streams to check oracle selection, acceptance, output distributions, the coverage cost of stopping, zero-probability branches, and reuse at exact addresses. To connect a model, provide its token paths, cumulative draft scores, and target rows; model execution and KV-cache management remain with the caller.
+```bash
+python -m unittest discover -s tests -v
+```
+
+The 21 CPU tests cover selection, exact output distributions on small trees, acceptance and coverage identities, zero-probability branches, and cache isolation.
+
+## FAQ
+
+**Does this repository run the paper's full GPU experiments?**
+
+It provides the core algorithms and a CPU example. Benchmark harnesses, datasets, generated outputs, model weights, and GPU serving integrations are outside this release.
+
+**What happens if the first target draw is absent from the pool?**
+
+Root-draw selection keeps that token alone. The caller must obtain its target row during verification.
+
+**Does the acceptance count include the continuation token?**
+
+No. Root-draw selection counts its first target draw as accepted, but excludes the continuation token, just like fixed-tree acceptance.
+
+**Can I reuse a row because the final token matches?**
+
+The cache requires the complete token context. Different prefixes can end in the same token while having different next-token distributions.
+
+## Repository layout
+
+```text
+target_rows/core.py       selection, verification, acceptance, and exact-row cache
+examples/quickstart.py    complete synthetic CPU example
+tests/test_core.py        selection and verification checks
+docs/algorithms.md       equations and integration assumptions
+```
 
 ## Citation
 
@@ -112,4 +168,4 @@ The tests enumerate small trees and target streams to check oracle selection, ac
 }
 ```
 
-The preselected-tree comparison follows the selection setting discussed in [PEARL](https://arxiv.org/abs/2408.11850). This repository implements its pruning rule for a supplied candidate pool; it does not include PEARL's GPU scheduling system.
+The preselected-tree comparison implements the PEARL-style pruning rule discussed in the paper, using a supplied candidate pool. See [PEARL](https://arxiv.org/abs/2408.11850) for its full decoding and GPU scheduling system.
