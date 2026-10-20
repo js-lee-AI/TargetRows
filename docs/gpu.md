@@ -4,7 +4,7 @@ The GPU runner implements the standalone-drafter deployment from the paper: a fi
 
 ## Installation
 
-Use Linux, Python 3.10–3.12, and an NVIDIA GPU. Create a separate environment:
+Use Linux, Python 3.10 to 3.12, and an NVIDIA GPU. Create a separate environment:
 
 ```bash
 git clone https://github.com/js-lee-AI/TargetRows.git
@@ -12,12 +12,12 @@ cd TargetRows
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -e ".[gpu]"
 python -m target_rows.gpu --help
 ```
 
-The PyTorch command uses CUDA 12.8 wheels; select a different supported wheel from the [official installation matrix](https://pytorch.org/get-started/previous-versions/) if needed for your driver. The GPU extra pins Transformers to 4.53.1, the version used by the standalone implementation. FlashAttention, custom CUDA compilation, and EAGLE weights are not required. Both models use bfloat16 by default; `--dtype float16` supports GPUs without bfloat16.
+The PyTorch command installs the version of the GPU checks below, built for CUDA 12.8; select a different supported wheel from the [official installation matrix](https://pytorch.org/get-started/previous-versions/) if needed for your driver. The GPU extra pins Transformers to 4.53.1, the version used by the standalone implementation. FlashAttention, custom CUDA compilation, and EAGLE weights are not required. Both models use bfloat16 by default; `--dtype float16` supports GPUs without bfloat16.
 
 ## Choose a model pair
 
@@ -47,7 +47,7 @@ Generated text is printed to standard output; loading and timing information goe
 
 ## 2. Compare policies on two GPUs
 
-Provide your own prompts as JSONL, one object per line:
+Provide your own prompts as JSONL, one object on each line:
 
 ```json
 {"id": "explanation", "text": "Explain speculative decoding in two sentences."}
@@ -83,7 +83,7 @@ The same CLI accepts `--target-model` and `--draft-model` for local model direct
 
 ## What the report measures
 
-The JSON report contains the model IDs and requested revisions, software versions, GPU names, configuration, generated token IDs and text, per-prompt elapsed time, accepted-token counts, verified tree sizes, and process peak allocated GPU memory. On one GPU, the target-process peak includes both models. Output files are never silently overwritten.
+The JSON report contains the model IDs and requested revisions, software versions, GPU names, configuration, generated token IDs and text, the elapsed time of each prompt, accepted-token counts, verified tree sizes, and process peak allocated GPU memory. On one GPU, the target-process peak includes both models. Output files are never silently overwritten.
 
 Timing starts before prompt prefill and ends after the final token commit and target synchronization. It includes drafting, root passes, selection, verification, and cache updates. It excludes model downloads, loading, CUDA graph capture, tokenization, and warmup. Aggregate throughput is total emitted tokens divided by total elapsed time. `throughput_vs_draft` uses draft selection as the baseline. Short examples check functionality; use enough prompts, repeat measurements, and avoid competing GPU jobs when measuring performance.
 
@@ -123,6 +123,6 @@ Short greedy checks ran on A100 80 GB GPUs with Python 3.11, PyTorch 2.10.0 + CU
 | Context exceeds cache | Increase `--max-context` or shorten the prompt/output. The cache also needs tree scratch slots. |
 | Tokenizer mismatch | Use a preset pair or checkpoints with identical token-to-ID mappings. |
 | Greedy output mismatch | Inspect the saved tokens. Packed passes can differ numerically from single-token passes; do not treat a mismatched run as a successful fidelity check. |
-| Newer Transformers fails | Use the pinned GPU extra in a fresh environment. The custom backend supports the listed architectures and rotary variants. |
+| Transformers 5 or later | The backend stops with an import error. Use the pinned GPU extra in a fresh environment. The custom backend supports the listed architectures and rotary variants. |
 
 The backend uses the model's RMSNorm, rotary embeddings, and Qwen3 query/key normalization. Small random-model tests compare every packed tree row and committed cache state against Hugging Face eager forwards. Quantized weights, sliding-window attention, and other model architectures are outside this runner.

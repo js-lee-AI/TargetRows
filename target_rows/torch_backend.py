@@ -5,8 +5,17 @@ CPU execution is supported for small correctness tests.
 """
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+import transformers
+
+# The rotary-embedding helpers and model classes below follow the Transformers 4.x layout.
+if int(transformers.__version__.split(".")[0]) != 4:
+    raise ImportError(
+        f"The GPU backend needs Transformers 4.x (tested with 4.53.1), found {transformers.__version__}. "
+        "Install the gpu extra: pip install \"target-rows[gpu] @ git+https://github.com/js-lee-AI/TargetRows.git\""
+    )
+
+from transformers import AutoModelForCausalLM  # noqa: E402
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS  # noqa: E402
 
 
 def _rms(x, w, eps):

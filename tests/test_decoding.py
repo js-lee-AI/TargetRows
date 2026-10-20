@@ -2,7 +2,15 @@
 import importlib.util
 import unittest
 
-HAS_BACKEND = all(importlib.util.find_spec(name) for name in ("torch", "transformers"))
+
+def _backend_installed():
+    if not all(importlib.util.find_spec(name) for name in ("torch", "transformers")):
+        return False
+    import transformers
+    return transformers.__version__.split(".")[0] == "4"
+
+
+HAS_BACKEND = _backend_installed()
 if HAS_BACKEND:
     import numpy as np
     import torch
@@ -12,7 +20,7 @@ if HAS_BACKEND:
     from target_rows.torch_backend import FastLM
 
 
-@unittest.skipUnless(HAS_BACKEND, "Install the gpu extra to run backend checks.")
+@unittest.skipUnless(HAS_BACKEND, "Install the gpu extra (Transformers 4.x) to run backend checks.")
 class BackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

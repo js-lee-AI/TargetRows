@@ -1,7 +1,7 @@
 cff-version: 1.2.0
-message: "Please cite the paper if you use this implementation."
+message: "If you use this code, please cite the paper below."
+title: "TargetRows: code for Understanding Target Probability Reuse in Speculative Decoding"
 type: software
-title: "TargetRows: Understanding Target Probability Reuse in Speculative Decoding"
 authors:
   - family-names: Lee
     given-names: Jungseob
@@ -23,4 +23,34 @@ authors:
     given-names: Chanjun
 repository-code: "https://github.com/js-lee-AI/TargetRows"
 url: "https://github.com/js-lee-AI/TargetRows"
-version: 0.1.0
+license: MIT
+version: "0.2.0"
+date-released: "2026-10-21"
+keywords:
+  - "speculative-decoding"
+  - "tree-decoding"
+  - "llm-inference"
+preferred-citation:
+  type: generic
+  title: "Understanding Target Probability Reuse in Speculative Decoding"
+  authors:
+    - family-names: Lee
+      given-names: Jungseob
+    - family-names: Jang
+      given-names: Giyoon
+    - family-names: Nam
+      given-names: Chailin
+    - family-names: Kum
+      given-names: Jiwoo
+    - family-names: Lee
+      given-names: Sihyeon
+    - family-names: Choo
+      given-names: Kyojun
+    - family-names: Song
+      given-names: Jihun
+    - family-names: Song
+      given-names: Eunseo
+    - family-names: Park
+      given-names: Chanjun
+  year: 2026
+  url: "https://github.com/js-lee-AI/TargetRows"

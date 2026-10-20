@@ -1,140 +1,101 @@
 <p align="center">
-  <img src="assets/banner.png" width="100%" alt="TargetRows — target-aware tree selection and exact-context probability reuse" />
+  <img src="assets/banner.png" width="100%" alt="TargetRows, understanding target probability reuse in speculative decoding" />
 </p>
-
-<h3 align="center">Understanding Target Probability Reuse<br>in Speculative Decoding</h3>
 
 <div align="center">
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![GPU](https://img.shields.io/badge/PyTorch-CUDA-EE4C2C?logo=pytorch&logoColor=white)](docs/gpu.md) [![NumPy](https://img.shields.io/badge/NumPy-CPU-4D77CF?logo=numpy&logoColor=white)](https://numpy.org/) [![CI](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml/badge.svg)](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml)
+[![Code MIT](https://img.shields.io/badge/Code-MIT-green.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml/badge.svg)](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/js-lee-AI/TargetRows?style=social)](https://github.com/js-lee-AI/TargetRows/stargazers)
 
-<b><a href="#overview">Overview</a> · <a href="#quick-start">Quick start</a> · <a href="#gpu-examples">GPU examples</a> · <a href="#usage">Core API</a> · <a href="docs/gpu.md">GPU guide</a> · <a href="docs/algorithms.md">Method details</a> · <a href="#citation">Citation</a></b>
+<b><a href="#quick-start">Quick start</a> · <a href="#usage">Usage</a> · <a href="#command-line">CLI</a> · <a href="#gpu-examples">GPU examples</a> · <a href="#results">Results</a> · <a href="#faq">FAQ</a> · <a href="#citation">Citation</a></b>
 
 </div>
 
-<p align="center">
-  Jungseob Lee · Giyoon Jang · Chailin Nam · Jiwoo Kum · Sihyeon Lee<br>
-  Kyojun Choo · Jihun Song · Eunseo Song · Chanjun Park
-</p>
-
 ---
+
+## News
+
+- **[2026-10-21]** Code released, with the tree-selection and verification algorithms and a GPU decoder for public Qwen3 and Llama target and drafter pairs.
 
 ## Overview
 
-Speculative decoding verifies a tree of draft tokens with a target model. The same pass also computes next-token probability distributions at the scored prefixes. **When can those distributions be reused, and how can a target distribution improve the next tree's allocation?**
+Speculative decoding verifies a tree of draft tokens with a target model in one pass. That pass also computes next-token distributions, which we call rows, at the prefixes it scores. The drafter, however, has to choose the next tree before the target's probabilities for it are known.
 
-TargetRows provides the selection algorithms and a GPU decoder for studying both questions:
+TargetRows rests on three ideas.
 
-| Component | What it does |
-| --- | --- |
-| **Root selection** | Reranks a candidate pool by replacing the first draft factor with the exact target probability. |
-| **Root-draw selection** | Draws the first token from the target before allocating the tree beneath it. |
-| **Exact-context reuse** | Looks up a retained probability row using the full committed token context. |
-| **Verification and acceptance** | Follows target draws through a tree and computes expected accepted-token counts. |
-| **GPU decoding** | Runs public Qwen3 or Llama target/drafter pairs with tree attention, a static KV cache, and optional CUDA graphs. |
+* **Exact reuse needs the full context.** A retained row gives exact next-token probabilities for the next round only when it was computed at that round's complete context, its address. Two contexts that end in the same token can have different distributions, so rows are stored and looked up by the full token context.
+* **Root selection.** Ranking candidate paths with the target's probability for their first token and the drafter's probabilities for the later tokens raises expected acceptance over draft ranking, most of all with small trees.
+* **Root-draw selection.** Drawing the first token from the target's root row before allocating the tree beneath it gives higher expected acceptance than pruning a preselected tree to that token's branch, even at equal mean tree size.
 
-Run both models on one GPU, or place the drafter on a second GPU to overlap drafting with the target's root pass. The core NumPy API remains available without PyTorch. **No separately trained TargetRows checkpoint is required:** the GPU examples load public target and draft models from Hugging Face.
+This repository is the selection rules, exact-context row reuse, tree verification and the expected-acceptance accounting as a small NumPy library, plus a GPU decoder that runs the rules with public target and drafter pairs.
+
+## What it does in one picture
+
+<p align="center">
+  <img src="assets/framework.png" width="80%" alt="A drafter proposes a candidate tree from context c, the target model scores it and retains rows at the scored prefixes, and the row at the next root caa is fed back as the root row for the next tree." />
+</p>
+
+<p align="center"><em>Address matching across decoding rounds (paper Figure 1). Verification from context c accepts a and emits another a as its continuation, so the next round starts at caa. The retained row at caa is exact for that round; the row at ca has a different address.</em></p>
 
 ## Quick start
 
 ```bash
-git clone https://github.com/js-lee-AI/TargetRows.git
-cd TargetRows
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -e ".[gpu]"
+pip install "git+https://github.com/js-lee-AI/TargetRows.git"
+```
 
-CUDA_VISIBLE_DEVICES=0 python -m target_rows.gpu generate \
-  --preset qwen3-4b --policy root-draw \
+```python
+import numpy as np
+from target_rows import CandidatePool, select_draft, select_root, select_root_draw
+
+# four candidate paths after the current context, with cumulative draft log probabilities
+pool = CandidatePool(
+    paths=((0,), (1,), (0, 0), (1, 0)),
+    draft_log_scores=tuple(np.log([0.7, 0.3, 0.42, 0.24])),
+)
+root_row = np.array([0.2, 0.8])  # the target's next-token row at the current context
+
+print(select_draft(pool, budget=3))           # ((0,), (0, 0), (1,))
+print(select_root(pool, root_row, budget=3))  # ((1,), (1, 0), (0,))
+first = 1                                     # a first token drawn from root_row
+print(select_root_draw(pool, first, budget=3))  # ((1,), (1, 0))
+```
+
+This runs on a CPU and downloads nothing. The drafter prefers token 0, the target prefers token 1, and root selection moves the tree under the target's choice. [`examples/quickstart.py`](examples/quickstart.py) adds verification and expected acceptance for every rule, and CI runs it on every push.
+
+To decode with real models on a GPU, install a CUDA build of PyTorch and the `gpu` extra:
+
+```bash
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+pip install "target-rows[gpu] @ git+https://github.com/js-lee-AI/TargetRows.git"
+
+CUDA_VISIBLE_DEVICES=0 target-rows generate --preset qwen3-4b --policy root-draw \
   --prompt "Explain speculative decoding in two sentences." \
   --max-new-tokens 128 --output results/generation.json
 ```
 
-Use Linux and Python 3.10–3.12 for the GPU runner. Start with a 24 GB NVIDIA GPU for this smaller Qwen pair. Downloads are cached after the first run; each invocation loads weights and prepares CUDA graphs before decoding. The [GPU guide](docs/gpu.md) covers driver-compatible PyTorch wheels, model access, memory, and measurement conventions.
+| install | adds | enough for |
+|---|---|---|
+| `pip install "git+https://github.com/js-lee-AI/TargetRows.git"` | numpy | the selection rules, verification, expected acceptance, the row cache and the CPU example |
+| `pip install "target-rows[gpu] @ git+https://github.com/js-lee-AI/TargetRows.git"` | torch, transformers 4.53.1, accelerate | the GPU decoder and the `target-rows` command |
+| `git clone` and then `pip install -e ".[gpu]"` | | `tests/` and local changes |
 
-## GPU examples
-
-| Example | Public target / drafter | Deployment |
-| --- | --- | --- |
-| **Generate** | Qwen3-4B / Qwen3-0.6B | One GPU; both models run sequentially. |
-| **Compare policies** | Qwen3-8B / Qwen3-0.6B | Two GPUs; drafting overlaps the target root pass. |
-| **Second model family** | Llama-3.1-8B-Instruct / Llama-3.2-1B-Instruct | Two GPUs; upstream Llama access required. |
-
-The first example is the quick start above. To compare all five decoders on a prompt:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python -m target_rows.gpu compare \
-  --preset qwen3-8b --target-device cuda:0 --draft-device cuda:1 \
-  --prompt "Write a Python function that checks whether a string is a palindrome." \
-  --budget 59 --temperature 0 --max-new-tokens 256 \
-  --output results/qwen8b-comparison.json
-```
-
-For the Llama pair, after obtaining access to both models:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python -m target_rows.gpu compare \
-  --preset llama3-8b --target-device cuda:0 --draft-device cuda:1 \
-  --prompt "Explain speculative decoding in two sentences." \
-  --budget 59 --max-new-tokens 128 --output results/llama8b-comparison.json
-```
-
-`compare` evaluates AR, draft ranking, root selection, root-draw selection, and preselected-tree pruning. It prints throughput and saves generated text, token IDs, accepted-token counts, hardware, and configuration. At temperature zero it also checks each output against AR. Use `--temperature 1` for sampling, `--budget 8` for a smaller tree, or `--prompts-file prompts.jsonl` for your own prompt set. [Full commands and report definitions](docs/gpu.md) explain the overlap schedule, pinned checkpoints, and the paper's stopping convention.
-
-## CPU example
-
-```bash
-python -m pip install .
-python examples/quickstart.py
-```
-
-This example requires only NumPy and downloads no models or datasets.
-
-<details>
-<summary>Example output — synthetic three-token vocabulary</summary>
-
-```text
-Synthetic example: expected accepted tokens (continuation excluded)
-Draft        0.428  ((0,), (0, 0), (0, 1), (0, 0, 0))
-Root         1.824  ((1,), (1, 0), (1, 0, 0), (0,))
-Oracle       1.824  ((1,), (1, 0), (1, 0, 0), (0,))
-Root-draw    2.257
-Preselected  1.228
-```
-
-These are illustrative values from the example, not the paper's benchmark results. The budget is four non-root nodes. Root-draw and preselected-tree pruning average over the target first draw and count it as accepted; all counts exclude the additional continuation token.
-
-</details>
+GPU checks ran with Python 3.11, PyTorch 2.10.0 with CUDA 12.8 and Transformers 4.53.1 on A100 80 GB GPUs, and the paper's two-GPU timings used RTX A6000 GPUs. The [GPU guide](docs/gpu.md) covers other CUDA wheels, model access, memory and the measurement conventions.
 
 ## Usage
 
 ### Select a tree with the target root row
 
-Represent each candidate as a tuple of token IDs relative to the current context. The pool contains every candidate's ancestors, with parents listed before children. Supply cumulative draft log probabilities, rather than individual edge scores.
+Represent each candidate as a tuple of token IDs relative to the current context. The pool contains every candidate's ancestors, with parents listed before children, and takes cumulative draft log probabilities rather than individual edge scores. The budget counts non-root nodes.
+
+For root-draw selection, sample the first token from the root row and pass the same token to `verify_tree(..., first_token=first)` once the target rows of the selected tree are available. This consumes the draw once:
 
 ```python
-import numpy as np
-from target_rows import CandidatePool, select_root, select_root_draw
-
-pool = CandidatePool(
-    paths=((0,), (1,), (0, 0), (1, 0)),
-    draft_log_scores=tuple(np.log([0.7, 0.3, 0.42, 0.24])),
-)
-root_row = np.array([0.2, 0.8])
-
-# Replace the first draft factor with the target probability.
-tree = select_root(pool, root_row, budget=3)
-print(tree)  # ((1,), (1, 0), (0,))
-
-# Or sample first, then allocate the tree beneath the sampled token.
 rng = np.random.default_rng(7)
 first = int(rng.choice(len(root_row), p=root_row))
-adaptive_tree = select_root_draw(pool, first, budget=3)
+tree = select_root_draw(pool, first, budget=3)
 ```
-
-For root-draw selection, pass the same `first` token to `verify_tree(..., first_token=first)` after obtaining the target rows for the selected tree. This consumes the draw once. The complete selection-and-verification example is in [`examples/quickstart.py`](examples/quickstart.py).
 
 ### Reuse a row at its exact context
 
@@ -144,85 +105,189 @@ from target_rows import ExactRowCache
 cache = ExactRowCache()
 cache.put((10, 20, 30), [0.2, 0.8])
 
-assert cache.get((10, 20, 30)) is not None  # Same full context.
-assert cache.get((11, 20, 30)) is None      # Same last token, different context.
+assert cache.get((10, 20, 30)) is not None  # the same full context
+assert cache.get((11, 20, 30)) is None      # the same last token, a different context
 ```
 
-Each cache belongs to one fixed target computation. Clear it when model weights, tokenizer, attention or position semantics, numerical execution semantics, temperature, or probability transformations change. The caller is responsible for preserving those conditions.
+Each cache belongs to one fixed target computation. Clear it when the weights, the tokenizer, the attention or position semantics, the numerical execution, the temperature or any probability transformation changes; the caller is responsible for keeping those fixed.
 
-## API
+### API at a glance
 
-| Function | Purpose |
-| --- | --- |
-| `select_draft` | Keep candidates in the original draft order. |
-| `select_root` | Replace the first path factor with the target probability. |
-| `select_root_draw` | Allocate descendants after the first target draw. |
-| `select_preselected` | Prune a preselected draft tree beneath that same draw. |
-| `select_oracle` | Rank by target path probabilities when rows throughout the pool are available. |
-| `verify_tree` | Accept a target path, emit one continuation, and report address coverage. |
-| `expected_acceptance` | Evaluate expected accepted draft tokens for a fixed tree. |
-| `expected_root_draw_acceptance` | Average acceptance over the target first draw. |
-| `distribution` | Convert logits to a softmax distribution, or an argmax point mass at temperature zero. |
-| `ExactRowCache` | Store and retrieve rows by the full token context. |
+| call | what it does | needs |
+|---|---|---|
+| `select_draft(pool, budget)` | keep candidates in the drafter's order | base install |
+| `select_root(pool, root_row, budget)` | replace the first path factor with the target probability | base install |
+| `select_root_draw(pool, first, budget)` | allocate descendants after the first target draw | base install |
+| `select_preselected(pool, first, budget)` | prune a preselected draft tree beneath that same draw | base install |
+| `select_oracle(pool, rows, budget)` | rank by target path probabilities when rows throughout the pool are available | base install |
+| `verify_tree(tree, rows, ...)` | accept a target path, emit one continuation and report address coverage | base install |
+| `expected_acceptance`, `expected_root_draw_acceptance` | expected accepted draft tokens of a fixed tree, or averaged over the first draw | base install |
+| `distribution(logits, temperature)` | softmax, or a point mass at the argmax at temperature zero | base install |
+| `ExactRowCache` | store and retrieve rows by the full token context | base install |
+| `target_rows.gpu`, `target_rows.torch_backend` | the GPU decoder, static KV cache and CUDA graphs | `[gpu]` |
 
-[Method details](docs/algorithms.md) cover the equations, tie handling, verification inputs, stopping policies, and acceptance conventions.
+[Method details](docs/algorithms.md) cover the equations, tie handling, verification inputs, stopping policies and acceptance conventions.
 
-## Checks
+## Command line
+
+Installing the `gpu` extra adds a `target-rows` command, and `python -m target_rows.gpu` runs the same thing.
 
 ```bash
-python -m unittest discover -s tests -v
+target-rows --help
+target-rows generate --preset qwen3-4b --policy root-draw --prompt "..."   # one decoder, one GPU
+target-rows compare --preset qwen3-8b --target-device cuda:0 --draft-device cuda:1 \
+  --prompts-file prompts.jsonl --budget 59 --output results/compare.json    # all five decoders
 ```
 
-The base tests cover selection, exact output distributions on small trees, acceptance and coverage identities, zero-probability branches, and cache isolation. With the GPU extra installed, additional CPU tests use tiny random Llama and Qwen3 models to check packed tree logits and cache commits against Hugging Face, draft path scores, and greedy equivalence across all selection policies. CI runs these checks without downloading any checkpoints.
+`generate` runs one decoder (`ar`, `draft`, `root`, `root-draw` or `preselected`). `compare` runs all five on the same prompts and saves the generated text and token IDs, accepted-token counts, verified tree sizes, timings, hardware and configuration. At temperature zero every record also checks the output against AR.
 
-## FAQ
+## GPU examples
 
-**What part of the paper can I run?**
+| example | public target / drafter | deployment |
+|---|---|---|
+| generate | Qwen3-4B / Qwen3-0.6B | one GPU, drafting and verification in turn |
+| compare decoders | Qwen3-8B / Qwen3-0.6B | two GPUs, drafting overlaps the target's root pass |
+| second model family | Llama-3.1-8B-Instruct / Llama-3.2-1B-Instruct | two GPUs, upstream Llama access required |
 
-The core algorithms and the standalone-drafter GPU deployment are included. The Qwen 8B and Llama examples use the paper's target/drafter pairs; Qwen 4B is a smaller starting point. The complete benchmark archive, EAGLE feature-drafter experiments, and learned-reranker training are outside this focused release.
+The first example is the quick start above. To compare the five decoders on one prompt:
 
-**Do I need new model weights?**
+```bash
+CUDA_VISIBLE_DEVICES=0,1 target-rows compare \
+  --preset qwen3-8b --target-device cuda:0 --draft-device cuda:1 \
+  --prompt "Write a Python function that checks whether a string is a palindrome." \
+  --budget 59 --temperature 0 --max-new-tokens 256 \
+  --output results/qwen8b-comparison.json
+```
 
-No. Root selection and root-draw selection use the public target and drafter unchanged. Presets pin upstream revisions. Models are downloaded from their original providers, subject to their access conditions; this repository distributes code, not checkpoints or benchmark data.
+For the Llama pair, after obtaining access to both models:
 
-**What happens if the first target draw is absent from the pool?**
+```bash
+CUDA_VISIBLE_DEVICES=0,1 target-rows compare \
+  --preset llama3-8b --target-device cuda:0 --draft-device cuda:1 \
+  --prompt "Explain speculative decoding in two sentences." \
+  --budget 59 --max-new-tokens 128 --output results/llama8b-comparison.json
+```
 
-Root-draw selection keeps that token alone. The caller must obtain its target row during verification.
+Use `--temperature 1` for sampling, `--budget 8` for the small tree of the paper, or `--prompts-file prompts.jsonl` for your own prompt set. The Qwen3-8B and Llama pairs are the paper's standalone-drafter pairs and Qwen3-4B is a smaller starting point. The presets pin upstream revisions, and no trained TargetRows checkpoint is needed.
 
-**Does the acceptance count include the continuation token?**
+## Results
 
-No. Root-draw selection counts its first target draw as accepted, but excludes the continuation token, just like fixed-tree acceptance.
+Root selection and root-draw selection raise expected acceptance on all six targets, and with standalone drafters root-draw selection also decodes faster than the PEARL-style decoder.
 
-**Can I reuse a row because the final token matches?**
+<p align="center">
+  <img src="assets/results.png" width="78%" alt="Speed gain of root-draw selection over the PEARL-style decoder on Llama-3.1-8B and Qwen3-8B, for greedy decoding and temperature 1, with both caps at 8 and with a lower root cap" />
+</p>
 
-The cache requires the complete token context. Different prefixes can end in the same token while having different next-token distributions.
+<p align="center"><em>Root-draw selection's decoding-speed gain over the PEARL-style decoder on two RTX A6000 GPUs (paper Figure 4). Left: both caps are 8. Right: the PEARL-style cap is 59 and root-draw caps are 40 to 43.</em></p>
+
+### Expected accepted draft tokens (paper Table 2)
+
+Greedy decoding on EAGLE-3 dynamic trees, at shared contexts. Draft keeps the drafter's ranking, Root replaces the first draft factor with the target probability, and Oracle ranks by exact target path probabilities. B is the number of non-root nodes.
+
+| target | B=8 Draft | Root | Oracle | B=59 Draft | Root | Oracle |
+|---|---|---|---|---|---|---|
+| Llama-3.1-8B | 3.186 | 3.568 | 4.899 | 4.509 | 4.676 | 4.899 |
+| Qwen3-4B | 1.664 | 2.002 | 2.720 | 2.340 | 2.516 | 2.720 |
+| Qwen3-8B | 1.556 | 1.919 | 2.564 | 2.221 | 2.399 | 2.564 |
+| Qwen2.5-7B | 2.359 | 2.710 | 3.636 | 3.293 | 3.450 | 3.636 |
+| Qwen2.5-14B | 2.435 | 2.790 | 3.846 | 3.486 | 3.645 | 3.846 |
+| Qwen2.5-32B | 2.464 | 2.812 | 3.843 | 3.489 | 3.646 | 3.843 |
+
+The paper's Table 2 also gives sampling at temperature 1 and root-draw selection's gain over the PEARL-style decoder, under the same cap and at equal mean tree size.
+
+### Online decoding at B=59 (paper Table 3)
+
+Root-draw selection's gain in accepted draft tokens over the PEARL-style decoder with a separate root pass, in percent, with 95% intervals. Nodes gives mean non-root counts as root draw / PEARL-style.
+
+| target | greedy gain | nodes | temperature 1 gain | nodes |
+|---|---|---|---|---|
+| Llama-3.1-8B | 3.3 [2.6, 4.1] | 53 / 39 | 4.1 [1.7, 6.8] | 48 / 34 |
+| Qwen3-4B | 6.7 [6.2, 7.3] | 49 / 33 | 7.1 [6.4, 7.9] | 48 / 32 |
+| Qwen3-8B | 7.3 [6.6, 8.0] | 44 / 28 | 7.3 [6.3, 8.3] | 43 / 27 |
+| Qwen2.5-7B | 4.5 [3.6, 5.5] | 49 / 35 | 5.7 [4.1, 7.4] | 46 / 32 |
+| Qwen2.5-14B | 3.8 [3.1, 4.4] | 49 / 36 | 4.5 [3.0, 5.9] | 47 / 32 |
+| Qwen2.5-32B | 3.7 [3.0, 4.3] | 50 / 36 | 4.7 [3.4, 6.1] | 47 / 33 |
+
+Both tables come from EAGLE-3 drafters on six targets, seven task types and two temperatures, and Table 2 scores every rule on the same recorded target rows. The recordings, the EAGLE-3 runs and the learned-reranker training are not part of this release. `target-rows compare` runs the same five decoders with standalone drafters on your own prompts and hardware.
 
 ## Repository layout
 
-```text
-target_rows/core.py       selection, verification, acceptance, and exact-row cache
-target_rows/torch_backend.py  Llama/Qwen3 forward, static KV cache, CUDA graphs
-target_rows/decoding.py   draft pool, tree verification, and generation
-target_rows/drafter.py    same-GPU drafting and the second-GPU worker
-target_rows/gpu.py        generate/compare CLI and pinned model presets
-examples/quickstart.py    complete synthetic CPU example
-tests/test_core.py        selection and verification checks
-tests/test_decoding.py    Hugging Face equivalence and decoder checks
-docs/algorithms.md       equations and integration assumptions
-docs/gpu.md              installation, three GPU recipes, and measurement guide
 ```
+target_rows/core.py           selection, verification, expected acceptance and the exact-row cache
+target_rows/decoding.py       draft pool, tree verification and generation
+target_rows/drafter.py        same-GPU drafting and the second-GPU worker
+target_rows/torch_backend.py  Llama and Qwen3 forward, static KV cache, CUDA graphs
+target_rows/gpu.py            the generate and compare commands and the pinned model presets
+examples/quickstart.py        the complete CPU example
+docs/algorithms.md            equations and integration assumptions
+docs/gpu.md                   installation, three GPU recipes and the measurement guide
+tests/                        CPU tests that CI runs, with tiny random models for the backend
+```
+
+## FAQ
+
+<details>
+<summary><b>Do I need a GPU?</b></summary>
+
+Only for the decoder. The selection rules, verification, expected acceptance and the row cache run on a CPU with the base install. The GPU decoder needs an NVIDIA GPU, a CUDA build of PyTorch and the `gpu` extra.
+
+</details>
+
+<details>
+<summary><b>Do I need new model weights?</b></summary>
+
+No. Root selection and root-draw selection use the public target and drafter unchanged. Models download from their original providers, subject to their access conditions; this repository distributes code, not checkpoints or benchmark data.
+
+</details>
+
+<details>
+<summary><b>What happens if the first target draw is absent from the pool?</b></summary>
+
+Root-draw selection keeps that token alone, and the caller must obtain its target row during verification.
+
+</details>
+
+<details>
+<summary><b>Does the acceptance count include the continuation token?</b></summary>
+
+No. Root-draw selection counts its first target draw as accepted but excludes the continuation token, as fixed-tree acceptance does.
+
+</details>
+
+<details>
+<summary><b>Can I reuse a row because the final token matches?</b></summary>
+
+No. The cache requires the complete token context, since different prefixes can end in the same token and still have different next-token distributions.
+
+</details>
+
+<details>
+<summary><b>How is this different from PEARL?</b></summary>
+
+The preselected-tree comparison implements PEARL's pruning rule on a supplied candidate pool: it selects a draft tree first and keeps the branch beneath the target's first draw. Root-draw selection instead allocates the whole budget after the draw. The full PEARL decoding and GPU scheduling system is described in its [paper](https://arxiv.org/abs/2408.11850).
+
+</details>
 
 ## Citation
 
+If you use this code, please cite the paper.
+
 ```bibtex
 @misc{lee2026targetrows,
-  title = {Understanding Target Probability Reuse in Speculative Decoding},
-  author = {Lee, Jungseob and Jang, Giyoon and Nam, Chailin and Kum, Jiwoo
-            and Lee, Sihyeon and Choo, Kyojun and Song, Jihun and Song, Eunseo
-            and Park, Chanjun},
-  year = {2026},
-  url = {https://github.com/js-lee-AI/TargetRows}
+  title  = {Understanding Target Probability Reuse in Speculative Decoding},
+  author = {Lee, Jungseob and Jang, Giyoon and Nam, Chailin and Kum, Jiwoo and Lee, Sihyeon and
+            Choo, Kyojun and Song, Jihun and Song, Eunseo and Park, Chanjun},
+  year   = {2026},
+  url    = {https://github.com/js-lee-AI/TargetRows}
 }
 ```
 
-The preselected-tree comparison implements the PEARL-style pruning rule discussed in the paper, using a supplied candidate pool. See [PEARL](https://arxiv.org/abs/2408.11850) for its full decoding and GPU scheduling system.
+The Cite this repository button in the GitHub sidebar gives the same entry from [`CITATION.cff`](CITATION.cff).
+
+## License
+
+Code is MIT, see [LICENSE](LICENSE).
+
+## Acknowledgments
+
+The paper's trees are the dynamic trees of [EAGLE-3](https://github.com/SafeAILab/EAGLE), the preselected-tree comparison follows [PEARL](https://arxiv.org/abs/2408.11850), and the GPU decoder loads its models through [Hugging Face Transformers](https://github.com/huggingface/transformers).
