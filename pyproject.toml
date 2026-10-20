@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "target-rows"
+version = "0.1.0"
+description = "Core algorithms for target probability reuse in speculative decoding"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23"]
+authors = [{name = "Jungseob Lee and collaborators"}]
+
+[project.urls]
+Repository = "https://github.com/js-lee-AI/TargetRows"
+
+[tool.setuptools.packages.find]
+include = ["target_rows*"]
