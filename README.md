@@ -6,9 +6,9 @@
 
 <div align="center">
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![NumPy](https://img.shields.io/badge/NumPy-CPU-4D77CF?logo=numpy&logoColor=white)](https://numpy.org/) [![CI](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml/badge.svg)](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![GPU](https://img.shields.io/badge/PyTorch-CUDA-EE4C2C?logo=pytorch&logoColor=white)](docs/gpu.md) [![NumPy](https://img.shields.io/badge/NumPy-CPU-4D77CF?logo=numpy&logoColor=white)](https://numpy.org/) [![CI](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml/badge.svg)](https://github.com/js-lee-AI/TargetRows/actions/workflows/ci.yml)
 
-<b><a href="#overview">Overview</a> · <a href="#quick-start">Quick start</a> · <a href="#usage">Usage</a> · <a href="#api">API</a> · <a href="docs/algorithms.md">Method details</a> · <a href="#faq">FAQ</a> · <a href="#citation">Citation</a></b>
+<b><a href="#overview">Overview</a> · <a href="#quick-start">Quick start</a> · <a href="#gpu-examples">GPU examples</a> · <a href="#usage">Core API</a> · <a href="docs/gpu.md">GPU guide</a> · <a href="docs/algorithms.md">Method details</a> · <a href="#citation">Citation</a></b>
 
 </div>
 
@@ -23,7 +23,7 @@
 
 Speculative decoding verifies a tree of draft tokens with a target model. The same pass also computes next-token probability distributions at the scored prefixes. **When can those distributions be reused, and how can a target distribution improve the next tree's allocation?**
 
-TargetRows provides the core algorithms for studying both questions:
+TargetRows provides the selection algorithms and a GPU decoder for studying both questions:
 
 | Component | What it does |
 | --- | --- |
@@ -31,19 +31,66 @@ TargetRows provides the core algorithms for studying both questions:
 | **Root-draw selection** | Draws the first token from the target before allocating the tree beneath it. |
 | **Exact-context reuse** | Looks up a retained probability row using the full committed token context. |
 | **Verification and acceptance** | Follows target draws through a tree and computes expected accepted-token counts. |
+| **GPU decoding** | Runs public Qwen3 or Llama target/drafter pairs with tree attention, a static KV cache, and optional CUDA graphs. |
 
-The library runs on a CPU with NumPy. This release contains the core implementation, a synthetic example, and tests; model execution and KV-cache management belong to the caller.
+Run both models on one GPU, or place the drafter on a second GPU to overlap drafting with the target's root pass. The core NumPy API remains available without PyTorch. **No separately trained TargetRows checkpoint is required:** the GPU examples load public target and draft models from Hugging Face.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/js-lee-AI/TargetRows.git
 cd TargetRows
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -e ".[gpu]"
+
+CUDA_VISIBLE_DEVICES=0 python -m target_rows.gpu generate \
+  --preset qwen3-4b --policy root-draw \
+  --prompt "Explain speculative decoding in two sentences." \
+  --max-new-tokens 128 --output results/generation.json
+```
+
+Use Linux and Python 3.10–3.12 for the GPU runner. Start with a 24 GB NVIDIA GPU for this smaller Qwen pair. Downloads are cached after the first run; each invocation loads weights and prepares CUDA graphs before decoding. The [GPU guide](docs/gpu.md) covers driver-compatible PyTorch wheels, model access, memory, and measurement conventions.
+
+## GPU examples
+
+| Example | Public target / drafter | Deployment |
+| --- | --- | --- |
+| **Generate** | Qwen3-4B / Qwen3-0.6B | One GPU; both models run sequentially. |
+| **Compare policies** | Qwen3-8B / Qwen3-0.6B | Two GPUs; drafting overlaps the target root pass. |
+| **Second model family** | Llama-3.1-8B-Instruct / Llama-3.2-1B-Instruct | Two GPUs; upstream Llama access required. |
+
+The first example is the quick start above. To compare all five decoders on a prompt:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python -m target_rows.gpu compare \
+  --preset qwen3-8b --target-device cuda:0 --draft-device cuda:1 \
+  --prompt "Write a Python function that checks whether a string is a palindrome." \
+  --budget 59 --temperature 0 --max-new-tokens 256 \
+  --output results/qwen8b-comparison.json
+```
+
+For the Llama pair, after obtaining access to both models:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python -m target_rows.gpu compare \
+  --preset llama3-8b --target-device cuda:0 --draft-device cuda:1 \
+  --prompt "Explain speculative decoding in two sentences." \
+  --budget 59 --max-new-tokens 128 --output results/llama8b-comparison.json
+```
+
+`compare` evaluates AR, draft ranking, root selection, root-draw selection, and preselected-tree pruning. It prints throughput and saves generated text, token IDs, accepted-token counts, hardware, and configuration. At temperature zero it also checks each output against AR. Use `--temperature 1` for sampling, `--budget 8` for a smaller tree, or `--prompts-file prompts.jsonl` for your own prompt set. [Full commands and report definitions](docs/gpu.md) explain the overlap schedule, pinned checkpoints, and the paper's stopping convention.
+
+## CPU example
+
+```bash
 python -m pip install .
 python examples/quickstart.py
 ```
 
-Python 3.10 or newer is required. The example needs no GPU, checkpoint, or dataset. CI runs the example and the tests on Python 3.10 and 3.12.
+This example requires only NumPy and downloads no models or datasets.
 
 <details>
 <summary>Example output — synthetic three-token vocabulary</summary>
@@ -126,13 +173,17 @@ Each cache belongs to one fixed target computation. Clear it when model weights,
 python -m unittest discover -s tests -v
 ```
 
-The 21 CPU tests cover selection, exact output distributions on small trees, acceptance and coverage identities, zero-probability branches, and cache isolation.
+The base tests cover selection, exact output distributions on small trees, acceptance and coverage identities, zero-probability branches, and cache isolation. With the GPU extra installed, additional CPU tests use tiny random Llama and Qwen3 models to check packed tree logits and cache commits against Hugging Face, draft path scores, and greedy equivalence across all selection policies. CI runs these checks without downloading any checkpoints.
 
 ## FAQ
 
-**Does this repository run the paper's full GPU experiments?**
+**What part of the paper can I run?**
 
-It provides the core algorithms and a CPU example. Benchmark harnesses, datasets, generated outputs, model weights, and GPU serving integrations are outside this release.
+The core algorithms and the standalone-drafter GPU deployment are included. The Qwen 8B and Llama examples use the paper's target/drafter pairs; Qwen 4B is a smaller starting point. The complete benchmark archive, EAGLE feature-drafter experiments, and learned-reranker training are outside this focused release.
+
+**Do I need new model weights?**
+
+No. Root selection and root-draw selection use the public target and drafter unchanged. Presets pin upstream revisions. Models are downloaded from their original providers, subject to their access conditions; this repository distributes code, not checkpoints or benchmark data.
 
 **What happens if the first target draw is absent from the pool?**
 
@@ -150,9 +201,15 @@ The cache requires the complete token context. Different prefixes can end in the
 
 ```text
 target_rows/core.py       selection, verification, acceptance, and exact-row cache
+target_rows/torch_backend.py  Llama/Qwen3 forward, static KV cache, CUDA graphs
+target_rows/decoding.py   draft pool, tree verification, and generation
+target_rows/drafter.py    same-GPU drafting and the second-GPU worker
+target_rows/gpu.py        generate/compare CLI and pinned model presets
 examples/quickstart.py    complete synthetic CPU example
 tests/test_core.py        selection and verification checks
+tests/test_decoding.py    Hugging Face equivalence and decoder checks
 docs/algorithms.md       equations and integration assumptions
+docs/gpu.md              installation, three GPU recipes, and measurement guide
 ```
 
 ## Citation

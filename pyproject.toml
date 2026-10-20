@@ -4,12 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "target-rows"
-version = "0.1.0"
-description = "Core algorithms for target probability reuse in speculative decoding"
+version = "0.2.0"
+description = "Target-aware tree selection and GPU speculative decoding"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.23"]
 authors = [{name = "Jungseob Lee and collaborators"}]
+
+[project.optional-dependencies]
+gpu = ["torch>=2.7.1,<3", "transformers==4.53.1", "accelerate>=0.26,<2"]
+
+[project.scripts]
+target-rows = "target_rows.gpu:main"
 
 [project.urls]
 Repository = "https://github.com/js-lee-AI/TargetRows"
